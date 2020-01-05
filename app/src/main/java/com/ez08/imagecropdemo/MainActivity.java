@@ -36,8 +36,13 @@ import pub.devrel.easypermissions.EasyPermissions;
 
 public class MainActivity extends AppCompatActivity implements  View.OnClickListener,EasyPermissions.PermissionCallbacks{
 
-    private CircleImageView ivTest;
+    //requestCode定义
+    private static final int TAKE_PHOTO = 1;
+    private static final int CHOOSE_PHOTO = 2;
+    private static final int CROP_PHOTO = 3;
 
+    private static final int REQUEST_PERMISSION = 4;
+    private CircleImageView ivTest;
     private File cameraSavePath;//拍照照片路径
     private Uri uri;//照片Uri
     //权限
@@ -45,11 +50,14 @@ public class MainActivity extends AppCompatActivity implements  View.OnClickList
 
     private String photoName = System.currentTimeMillis() + ".jpg";
 
+    //适配Android10
+    Boolean isAndroidQ = Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q;
+
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-
 
         Button btnGetPicFromCamera = findViewById(R.id.btn_get_pic_from_camera);
         Button btnGetPicFromPhotoAlbum = findViewById(R.id.btn_get_pic_form_photo_album);
@@ -59,11 +67,15 @@ public class MainActivity extends AppCompatActivity implements  View.OnClickList
         btnGetPicFromCamera.setOnClickListener(this);
         btnGetPicFromPhotoAlbum.setOnClickListener(this);
         btnGetPermission.setOnClickListener(this);
-
-        cameraSavePath = new File(Environment.getExternalStorageDirectory().getPath()+"/"+photoName);
-
+        //注意，该处路径有个神坑
+        if (isAndroidQ){
+            //Android10以上版本，图片存放在关联目录，若存放指定目录，需要运行时权限和目录指定
+            cameraSavePath = new File(getExternalCacheDir()+"/"+photoName);
+        }else{
+            //android10以下版本，图片存放在SD卡根目录
+            cameraSavePath = new File(Environment.getExternalStorageDirectory().getPath()+"/"+photoName);
+        }
     }
-
 
     //激活相机操作
     private void goCamera(){
@@ -77,7 +89,7 @@ public class MainActivity extends AppCompatActivity implements  View.OnClickList
         }
 
         intent.putExtra(MediaStore.EXTRA_OUTPUT, uri);
-        startActivityForResult(intent, 1);
+        startActivityForResult(intent, TAKE_PHOTO);
 
     }
 
@@ -86,7 +98,7 @@ public class MainActivity extends AppCompatActivity implements  View.OnClickList
         Intent intent = new Intent();
         intent.setAction(Intent.ACTION_PICK);
         intent.setType("image/*");
-        startActivityForResult(intent, 2);
+        startActivityForResult(intent, CHOOSE_PHOTO);
     }
 
 
@@ -96,10 +108,9 @@ public class MainActivity extends AppCompatActivity implements  View.OnClickList
             Toast.makeText(this,"已经申请相关权限",Toast.LENGTH_SHORT).show();
         }else{
             //没有打开相关权限，申请权限
-            EasyPermissions.requestPermissions(this,"需要获取您的相册,照相使用权限",1,permissions);
+            EasyPermissions.requestPermissions(this,"需要获取您的相册,照相使用权限",REQUEST_PERMISSION,permissions);
         }
     }
-
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
@@ -122,33 +133,47 @@ public class MainActivity extends AppCompatActivity implements  View.OnClickList
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         String photoPath;
-        if (requestCode == 1 && resultCode == RESULT_OK) {
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                photoPath = String.valueOf(cameraSavePath);
-            } else {
-                photoPath = uri.getEncodedPath();
+        if (requestCode == TAKE_PHOTO && resultCode == RESULT_OK) {
+            if (isAndroidQ) {
+                //android Q以上的版本，屏蔽了图片真实路径访问，只能用Uri进行访问
+                //根据Uri先裁剪
+                photoClip(uri);
+               //ivTest.setImageURI(uri);//直接加载
+                Glide.with(MainActivity.this).load(uri).into(ivTest);//使用Glide加载
+            }else{
+                //android Q以下的版本，使用图片的真实路径进行访问
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    photoPath = String.valueOf(cameraSavePath);
+                } else {
+                    photoPath = uri.getEncodedPath();
+                }
+                Log.d("xulimin","拍照返回图片路径:"+photoPath);
+                //对拍的照进行裁剪
+                 photoClip(uri);
+                 Glide.with(MainActivity.this).load(photoPath).into(ivTest);
             }
-            Log.d("拍照返回图片路径:", photoPath);
-           //对拍的照进行裁剪
-            photoClip(uri);
-            Glide.with(MainActivity.this).load(photoPath).into(ivTest);
-        } else if (requestCode == 2 && resultCode == RESULT_OK) {
-            photoPath = getPhotoFromPhotoAlbum.getRealPathFromUri(this, data.getData());
-            Log.d("相册返回图片路径:", photoPath);
-            photoClip(data.getData());
-            Glide.with(MainActivity.this).load(photoPath).into(ivTest);
-        }else if (requestCode == 3&& resultCode ==RESULT_OK){
-            Bundle bundle = data.getExtras();
 
+        } else if (requestCode ==CHOOSE_PHOTO && resultCode == RESULT_OK) {
+
+            if (isAndroidQ){
+                //ivTest.setImageURI(data.getData());//不裁剪，直接加载
+                photoClip(data.getData());//裁剪后，再回调里进行加载
+            }else {
+                //android10以下版本，使用相册图片真实路径进行加载
+                photoPath = getPhotoFromPhotoAlbum.getRealPathFromUri(this, data.getData());
+                Log.d("相册返回图片路径:", photoPath);
+                photoClip(data.getData());
+            }
+        }else if (requestCode == CROP_PHOTO && resultCode ==RESULT_OK){
+            Bundle bundle = data.getExtras();
             if (bundle != null) {
                 //在这里获得了剪裁后的Bitmap对象，可以用于上传
                 Bitmap image = bundle.getParcelable("data");
                 //设置到ImageView上
                 ivTest.setImageBitmap(image);
                 //也可以进行一些保存、压缩等操作后上传
-                String path = saveImage("头像", image);
-                Log.d("裁剪路径:", path);
+              //  String path = saveImage("头像", image);
+               // Log.d("xulimin","裁剪路径:" + path);
             }
         }
 
@@ -191,26 +216,25 @@ public class MainActivity extends AppCompatActivity implements  View.OnClickList
         intent.putExtra(MediaStore.EXTRA_OUTPUT, uritempFile);
         intent.putExtra("outputFormat", Bitmap.CompressFormat.JPEG.toString());
         intent.putExtra("noFaceDetection", true);
-
-        startActivityForResult(intent, 3);
+        startActivityForResult(intent, CROP_PHOTO);
     }
-    public String saveImage(String name, Bitmap bmp) {
-        File appDir = new File(Environment.getExternalStorageDirectory().getPath());
-        if (!appDir.exists()) {
-            appDir.mkdir();
-        }
-        String fileName = name + ".jpg";
-        File file = new File(appDir, fileName);
-        try {
-            FileOutputStream fos = new FileOutputStream(file);
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, fos);
-            fos.flush();
-            fos.close();
-            return file.getAbsolutePath();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
+//    public String saveImage(String name, Bitmap bmp) {
+//        File appDir = new File(Environment.getExternalStorageDirectory().getPath());
+//        if (!appDir.exists()) {
+//            appDir.mkdir();
+//        }
+//        String fileName = name + ".jpg";
+//        File file = new File(appDir, fileName);
+//        try {
+//            FileOutputStream fos = new FileOutputStream(file);
+//            bmp.compress(Bitmap.CompressFormat.PNG, 100, fos);
+//            fos.flush();
+//            fos.close();
+//            return file.getAbsolutePath();
+//        } catch (IOException e) {
+//            e.printStackTrace();
+//        }
+//        return null;
+//    }
 
 }
